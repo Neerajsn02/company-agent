@@ -9,6 +9,9 @@ from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader, T
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_ollama import OllamaEmbeddings
 from langchain_community.vectorstores import Chroma
+from langchain.tools import tool
+from langchain.agents import create_agent
+import subprocess
 import os
 import uuid
 
@@ -19,6 +22,77 @@ llm = init_chat_model(
     temperature=0
 )
 embeddings = OllamaEmbeddings(model="nomic-embed-text")
+
+
+@tool
+def read_file(path: str):
+    """Read a file from the workspace"""
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+@tool
+def write_file(path: str, content: str):
+    """Create or overwrite a file in the workspace"""
+    with open(path, "w", encoding="utf-8") as f:
+        return f.write(content)
+
+    return f"successfuly wrote to {path}"
+
+@tool
+def list_directory(path: str = ".") -> str:
+    """List the files and directories"""
+    items = os.listdir(path)
+    return "\n".join(items)
+
+@tool
+def search_code(query: str, directory: str = "."):
+    """Search for a string in source files"""
+    results = []
+
+    for root, dirs, files in os.walk(directory):
+        for file in files:
+            path = os.path.join(root, file)
+            try:
+                with open (path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                if query in content:
+                    results.append(path)
+            except (UnicodeDecodeError, PermissionError):
+                continue
+
+    return "\n".join(results)
+
+@tool
+def run_command(command: str) -> str:
+    """Run a shell command in the worksapce"""
+    result = subprocess.run(
+        command, 
+        shell=True,
+        capture_output=True,
+        text=True,
+        timeout=60
+    )
+
+    return (
+        f"STDOUT:\n{result.stdout}\n\n"
+        f"STDERR:\n{result.stderr}\n\n"
+        f"EXIT CODE: {result.returncode}"
+    )
+
+tools = [
+    read_file,
+    write_file,
+    list_directory,
+    search_code,
+    run_command
+]
+
+# code_llm = ChatOllama(
+#     model="qwen2.5-coder:7b",
+#     temperature=0
+# )
+
+code_agent = create_agent(llm, tools)
 
 
 # pydantic schema that defines the output of an llm call - used with with_structured_output
@@ -97,14 +171,12 @@ def prompt_llm_rag(state: State):
 
 
 def prompt_llm_code(state: State):
-        messages = [
-        {'role': 'system', 'content': 'No matter what the user says, say "I am the Coding Agent"'}
-        ] # + state['messages']
+        user_prompt = state['messages'][-1].content
+        response = code_agent.invoke(
+            {'messages':[{'role': 'user', 'content': user_prompt}]}
+        )
 
-
-        response = llm.invoke(messages)
-
-        return {'messages': [{'role': 'assistant', 'content': response.content}]}
+        return {'messages': [{'role': 'assistant', 'content': response['messages'][-1].content}]}
 
 
 graph_builder = StateGraph(State)
